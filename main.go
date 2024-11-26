@@ -1,182 +1,124 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"flag"
 	"fmt"
-	"io/fs"
+	"io/ioutil"
 	"log"
+	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 
-	"github.com/chromedp/cdproto/network"
-	"github.com/chromedp/cdproto/runtime"
-	"github.com/chromedp/chromedp"
-	"github.com/graniticio/inifile"
+	"github.com/TobiasYin/go-lsp/logs"
+	"github.com/TobiasYin/go-lsp/lsp"
+	"github.com/TobiasYin/go-lsp/lsp/defines"
 )
 
-var (
-	dir string
-)
+func strPtr(str string) *string {
+	return &str
+}
+
+var logPath *string
+
+func init() {
+	var logger *log.Logger
+	defer func() {
+		logs.Init(logger)
+	}()
+	logPath = flag.String("logs", "", "logs file path")
+	if logPath == nil || *logPath == "" {
+		logger = log.New(os.Stderr, "", 0)
+		return
+	}
+	p := *logPath
+	f, err := os.Open(p)
+	if err == nil {
+		logger = log.New(f, "", 0)
+		return
+	}
+	f, err = os.Create(p)
+	if err == nil {
+		logger = log.New(f, "", 0)
+		return
+	}
+	panic(fmt.Sprintf("logs init error: %v", *logPath))
+}
 
 func main() {
-	flag.StringVar(&dir, "dir", "", "Absolute path for target directory")
-
-	flag.Parse()
-	if len(dir) < 1 {
-		log.Fatal("No --dir is given")
-	}
-
-	urlFiles := Scan(dir, ".url")
-	urlFilesLen := len(urlFiles)
-	if urlFilesLen < 1 {
-		log.Fatal("No .url file found")
-	}
-	fmt.Printf("There are %d url files\n", len(urlFiles))
-
-	file, err := os.Create(fmt.Sprintf("%s.txt", getFolderName(dir)))
-	errExit(err)
-	defer file.Close()
-	w := bufio.NewWriter(file)
-
-	for _, s := range urlFiles {
-		ic, err := inifile.NewIniConfigFromPath(s)
-		errExit(err)
-		url, err := ic.Value("InternetShortcut", "URL")
-		errExit(err)
-		fmt.Println("checking", url, ", in", s, "...")
-		protocol := url[0:strings.Index(url, `://`)]
-		if protocol == `http` || protocol == `https` {
-			title, err := getTitle(url)
-			errExit(err)
-			fmt.Fprintf(w, "- [%s](%s)\n", title, url)
-		} else {
-			fmt.Fprintf(w, "- [%s](%s)\n", url, url)
-		}
-	}
-	errExit(w.Flush())
-
-	// for _, s := range urlFiles {
-	// 	errExit(os.Remove(s))
-	// }
-}
-
-func errExit(err error) {
-	if err != nil {
-		log.Fatal(err)
-	}
-}
-
-func Scan(root, ext string) []string {
-	var a []string
-	filepath.WalkDir(root, func(s string, d fs.DirEntry, e error) error {
-		if e != nil {
-			return e
-		}
-		if filepath.Ext(d.Name()) == ext {
-			a = append(a, s)
-		}
-		return nil
+	server := lsp.NewServer(&lsp.Options{CompletionProvider: &defines.CompletionOptions{
+		TriggerCharacters: &[]string{"."},
+	}})
+	server.OnHover(func(ctx context.Context, req *defines.HoverParams) (result *defines.Hover, err error) {
+		logs.Println("hover: ", req)
+		return &defines.Hover{Contents: defines.MarkupContent{Kind: defines.MarkupKindPlainText, Value: "hello world"}}, nil
 	})
-	return a
+
+	server.OnCompletion(func(ctx context.Context, req *defines.CompletionParams) (result *[]defines.CompletionItem, err error) {
+		logs.Println("completion: ", req)
+		d := defines.CompletionItemKindText
+		return &[]defines.CompletionItem{defines.CompletionItem{
+			Label:      "code",
+			Kind:       &d,
+			InsertText: strPtr("Hello"),
+		}}, nil
+	})
+
+	server.OnDocumentFormatting(func(ctx context.Context, req *defines.DocumentFormattingParams) (result *[]defines.TextEdit, err error) {
+		logs.Println("format: ", req)
+		line, err := ReadFile(req.TextDocument.Uri)
+		if err != nil {
+			return nil, err
+		}
+		res := []defines.TextEdit{}
+		for i, v := range line {
+			r := convertParagraphs(v)
+			if v != r {
+				res = append(res, defines.TextEdit{
+					Range: defines.Range{
+						Start: defines.Position{uint(i), 0},
+						End:   defines.Position{uint(i), uint(len(v) + 1)},
+					},
+					NewText: r,
+				})
+			}
+		}
+
+		return &res, nil
+	})
+	server.Run()
 }
 
-func getTitle(urlstr string) (string, error) {
-	ctx, cancel := chromedp.NewContext(context.Background())
-	defer cancel()
-	var title string
+func ReadFile(filename defines.DocumentUri) ([]string, error) {
+	enEscapeUrl, _ := url.QueryUnescape(string(filename))
+	data, err := ioutil.ReadFile(enEscapeUrl[6:])
+	if err != nil {
+		return nil, err
+	}
+	content := string(data)
+	line := strings.Split(content, "\n")
+	return line, nil
+}
 
-	chromedp.ListenTarget(ctx, func(ev interface{}) {
-
-		switch ev := ev.(type) {
-
-		case *network.EventResponseReceived:
-			resp := ev.Response
-			if resp.URL == urlstr {
-				log.Printf("received headers: %s %s", resp.URL, resp.MimeType)
-				if resp.MimeType != "text/html" {
-					chromedp.Cancel(ctx)
-				}
-
-				if strings.Contains(resp.URL, "youtube.com") {
-					log.Printf("YT!!")
-				}
-
-				// may be redirected
-				switch ContentType := resp.Headers["Content-Type"].(type) {
-				case string:
-					// here v has type T
-					if !strings.Contains(ContentType, "text/html") {
-						chromedp.Cancel(ctx)
-					}
-				}
-
-				switch ContentType := resp.Headers["content-type"].(type) {
-				case string:
-					// here v has type T
-					if !strings.Contains(ContentType, "text/html") {
-						chromedp.Cancel(ctx)
-					}
+// split paragraphs into sentences, and make the sentence first char uppercase and others lowercase
+func convertParagraphs(paragraph string) string {
+	sentences := []string{}
+	for _, sentence := range strings.Split(paragraph, ".") {
+		sentence = strings.TrimSpace(sentence)
+		s := []string{}
+		w := strings.Split(sentence, " ")
+		for i, v := range w {
+			if len(v) > 0 {
+				if i == 0 {
+					s = append(s, strings.ToUpper(v[0:1])+strings.ToLower(v[1:]))
+				} else {
+					s = append(s, strings.ToLower(v))
 				}
 			}
 		}
-	})
-
-	req := `
-(async () => new Promise((resolve, reject) => {
-	var handle = NaN;
-
-	(function animate() {
-		if (!isNaN(handle)) {
-			clearTimeout(handle);
+		if len(s) != 0 {
+			sentences = append(sentences, strings.Join(s, " ")+".")
 		}
-
-		if (document.title.length > 0 && !document.title.startsWith("http")) {
-			resolve(document.title);
-		} else {
-			handle = setTimeout(animate, 1000);
-		}
-	}());
-}));
-`
-	err := chromedp.Run(ctx,
-		chromedp.Navigate(urlstr),
-		//chromedp.Evaluate(`window.location.href`, &res),
-		chromedp.Evaluate(req, nil, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
-			return p.WithAwaitPromise(true)
-		}),
-		chromedp.Title(&title),
-	)
-	if err == context.Canceled {
-		// url as title
-		log.Printf("Cancel!!")
-		return urlstr, nil
 	}
-
-	return title, err
-}
-
-// fmt.Println(getFolderName(`P`))           //P
-// fmt.Println(getFolderName(`P:`))          //P
-// fmt.Println(getFolderName(`P:\`))         //P
-// fmt.Println(getFolderName(`P:\testing`))  //testing
-// fmt.Println(getFolderName(`P:\testing\`)) //testing
-func getFolderName(input string) string {
-	var folderName string
-	lastIndex := strings.LastIndex(input, `\`)
-	length := len(input)
-	if lastIndex+1 == length {
-		lastIndex = strings.LastIndex(input[0:length-1], `\`)
-		folderName = input[lastIndex+1 : length-1]
-	} else {
-		folderName = input[lastIndex+1 : length]
-	}
-
-	if folderName[len(folderName)-1:] == ":" {
-		return folderName[0 : len(folderName)-1]
-	} else {
-		return folderName
-	}
+	return strings.Join(sentences, " ")
 }
