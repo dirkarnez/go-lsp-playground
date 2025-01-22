@@ -4,7 +4,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net/url"
 	"os"
@@ -46,9 +45,13 @@ func init() {
 }
 
 func main() {
-	server := lsp.NewServer(&lsp.Options{CompletionProvider: &defines.CompletionOptions{
-		TriggerCharacters: &[]string{"."},
-	}})
+	server := lsp.NewServer(&lsp.Options{
+		Network: "tcp",
+		Address: "127.0.0.1:7998",
+		CompletionProvider: &defines.CompletionOptions{
+			TriggerCharacters: &[]string{"."},
+		},
+	})
 
 	server.OnHover(func(ctx context.Context, req *defines.HoverParams) (result *defines.Hover, err error) {
 		logs.Println("hover: ", req)
@@ -92,7 +95,7 @@ func main() {
 
 func ReadFile(filename defines.DocumentUri) ([]string, error) {
 	enEscapeUrl, _ := url.QueryUnescape(string(filename))
-	data, err := ioutil.ReadFile(enEscapeUrl[6:])
+	data, err := os.ReadFile(enEscapeUrl[6:])
 	if err != nil {
 		return nil, err
 	}
