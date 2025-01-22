@@ -49,6 +49,7 @@ func main() {
 	server := lsp.NewServer(&lsp.Options{CompletionProvider: &defines.CompletionOptions{
 		TriggerCharacters: &[]string{"."},
 	}})
+
 	server.OnHover(func(ctx context.Context, req *defines.HoverParams) (result *defines.Hover, err error) {
 		logs.Println("hover: ", req)
 		return &defines.Hover{Contents: defines.MarkupContent{Kind: defines.MarkupKindPlainText, Value: "hello world"}}, nil
@@ -57,7 +58,7 @@ func main() {
 	server.OnCompletion(func(ctx context.Context, req *defines.CompletionParams) (result *[]defines.CompletionItem, err error) {
 		logs.Println("completion: ", req)
 		d := defines.CompletionItemKindText
-		return &[]defines.CompletionItem{defines.CompletionItem{
+		return &[]defines.CompletionItem{{
 			Label:      "code",
 			Kind:       &d,
 			InsertText: strPtr("Hello"),
@@ -76,8 +77,8 @@ func main() {
 			if v != r {
 				res = append(res, defines.TextEdit{
 					Range: defines.Range{
-						Start: defines.Position{uint(i), 0},
-						End:   defines.Position{uint(i), uint(len(v) + 1)},
+						Start: defines.Position{Line: uint(i), Character: 0},
+						End:   defines.Position{Line: uint(i), Character: uint(len(v) + 1)},
 					},
 					NewText: r,
 				})
